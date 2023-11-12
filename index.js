@@ -1,13 +1,24 @@
 const express = require('express');
 const app = express();
 const cors = require('cors');
-const crypto = require('crypto');
 require('dotenv').config();
-const { MongoClient } = require('mongodb');
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-const client = new MongoClient(process.env.MONGO_URI);
-const db = client.db('exer-db');
-const exercises = db.collection('exercises');
+mongoose.connect(process.env.MONGO_URI)
+
+const UserSchema = new Schema({
+  username: String,
+});
+const User = mongoose.model("User", UserSchema);
+
+const ExerciseSchema = new Schema({
+  user_id: { type: String, required: true },
+  description: String,
+  duration: Number,
+  date: Date
+});
+const Exercise = mongoose.model("Exercise", ExerciseSchema);
 
 app.use(cors());
 
@@ -21,71 +32,95 @@ app.get('/', (req, res) => {
 });
 
 app.post('/api/users', async (req, res) => {
-  if (req.body.username) {
-    const username = req.body.username;
-    const _id = crypto.randomBytes(16).toString('hex');
-    const userDoc = { username, _id, count: 1, log: []};
-    await exercises.insertOne(userDoc);
-    res.json({username, _id});
-  } else {
-    res.json({ error: 'Please enter a username' });
+  const userObj = new User({
+    username: req.body.username
+  });
+  try{
+    const user = await userObj.save();
+    res.json(user);
+  }catch(err){
+    console.log(err);
   }
+
 });
 
 app.post('/api/users/:_id/exercises', async (req, res) => {
-  const userDoc = await exercises.findOne({ _id: req.params._id });
-  let date;
-  if (req.body.date) {
-    date = new Date(req.body.date).toDateString();
-  }else {
-    date = new Date().toDateString();
-  }
-  const exerDoc = {
-    description: req.body.description,
-    duration: +req.body.duration,
-    date
-  };
-
-  userDoc.log.push(exerDoc);
-  userDoc.count = userDoc.log.length;
+  const id = req.params._id;
+  const { description, duration, date } = req.body;
 
   try {
-    await exercises.findOneAndUpdate({ _id: req.params._id }, userDoc);
-  }catch(err){
+    const user = await User.findById(id);
+    if (!user){
+      res.send('Could not find user')
+    }else {
+      const exerciseObj = new Exercise({
+        user_id: user._id,
+        description,
+        duration,
+        date: date ? new Date(date) : new Date()
+      });
+      const exercise = await exerciseObj.save();
+      res.json({
+        _id: user._id,
+        username: user.username,
+        description: exercise.description,
+        duration: exercise.duration,
+        date: new Date(exercise.date).toDateString()
+      })
+    }
+  }catch(err) {
     console.log(err);
-    await exercises.findOneAndReplace({ _id: req.params._id }, userDoc);
+    res.send('There was an error');
   }
-
-  res.json(userDoc);
-
 })
 
 app.get('/api/users', async (req, res) => {
-  res.json(await exercises.find().toArray())
+  const users = await User.find({}).select("_id username");
+  if (!users) {
+    res.send("No users");
+  }else {
+    res.json(users);
+  }
 });
 
 app.get('/api/users/:_id/logs', async (req, res) => {
-  // const { from, to, limit } = req.query;
-  const userDoc = await exercises.findOne({ _id: req.params._id });
-  if (!userDoc) {
-    res.send('Could not find user');
+  const { from, to, limit } = req.query;
+  const id = req.params._id;
+  const user = await User.findById(id);
+  if (!user){
+    res.send("Could not find user");
     return;
   }
-  // let dateObj = {};
-  // if (from){
-  //   dateObj["gte"] = new Date(from);
-  // }
-  // if (to){
-  //   dateObj["lte"] = new Date(to);
-  // }
-  // let filter = {
-  //   user_id: req.params._id
-  // }
-  // if (from || to){
-  //   filter.date = dateObj;
-  // }
-  res.json(userDoc);
-})
+  let dateObj = {};
+  if (from){
+    dateObj["$gte"] = new Date(from);
+  }
+  if (to){
+    dateObj["$lte"] = new Date(to);
+  }
+  let filter = {
+    user_id: id
+  }
+  if (from || to){
+    filter.date = dateObj;
+  }
+  
+  const exercises = await Exercise.find(filter).limit(+limit ?? 500);
+
+  const log = exercises.map(e => ({
+      description: e.description,
+      duration: e.duration,
+      date: e.date.toDateString()
+    })
+  )
+  
+  res.json({
+    username: user.username,
+    _id: user._id,
+    count: exercises.length,
+    log 
+  });
+});
 
 const listener = app.listen(process.env.PORT || 3000, () => {
   console.log('Your app is listening on port ' + listener.address().port)
